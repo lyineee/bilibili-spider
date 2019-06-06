@@ -18,13 +18,12 @@ class BiliSpider(Spider):
         self.startVID = 230000
         self.dataFile=open('data.json','w+',encoding='utf-8')
         print('prepare done')
-        # self.g = Grab(transport='urllib3')
 
     def task_generator(self):
         # print('generate start')
+        pass
 
         for vid in range(self.startVID, self.startVID+20):
-            # g = Grab(transport='urllib3')
             # time.sleep(2)
             yield Task('get_title', url=self.baseUrl.format(vid=vid),vid=vid)
 
