@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import logging
+from pymongo import MongoClient
 
 from lxml import etree
 from grab import Grab
@@ -62,6 +63,69 @@ class BiliSpider(Spider):
     #     pass
 
 
+class MongoDB:
+
+    def __init__(self, ip, port, database):
+        client = MongoClient(ip, port)
+        self.db = client[database]
+        self.confKeys = ['firstVid', 'dataToCollect']
+        self.cacheKeys = ['presentVid']
+
+    def insert(self, data, collection):
+        # TODO add data to collection
+        # self.db.collection.insert_one(data)
+        try:
+            self.db[collection].insert_one(data)
+        except:
+            pass
+
+    def get_conf(self):
+        # read the global configuration
+        # TODO add more configuration
+
+        configCollection = self.db.config
+        config = dict.fromkeys(self.confKeys, -1)
+        try:
+            for key in config.keys():
+                config[key] = configCollection[key]
+        except:
+            logging.critical('error when read config')
+            sys.exit(0)
+
+        return config
+
+    def readCache(self):
+        # read the cache for spider
+        # TODO add more cache item
+
+        cache = dict.fromkeys(self.cacheKeys, -1)
+        cacheCollection = self.db.cache
+        try:
+            for key in cache.keys():
+                cache[key] = cacheCollection.find_one()[key]
+        except:
+            logging.warning(
+                'error when read cache, spider may start at the beginning')
+
+        return cache
+
+    def writeCache(self, data):
+        post = dict.fromkeys(self.cacheKeys, -1)
+        try:
+            for key in self.cacheKeys:
+                post[key] = data[key]
+        except:
+            logging.warning('error when writting cache')
+        else:
+            self.db.cache.insert_one(post)
+
+    def test(self):
+        post={'presentVid':23333}
+        self.writeCache(post)
+        data=self.readCache()
+        print(data)
+
+
 def init_log():
 
     if not os.path.exists('./log'):
@@ -99,3 +163,6 @@ if __name__ == "__main__":
     init_log()
     mySpider = BiliSpider(thread_number=4)
     mySpider.run()
+
+    # db=MongoDB('localhost',27070,'test')
+    # db.test()
