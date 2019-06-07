@@ -24,25 +24,35 @@ class BiliSpider(Spider):
                 'author', 'description', 'view', 'danmaku']
 
     def prepare(self):
+        #basic variable
         self.baseUrl = 'http://www.bilibili.com/video/av{vid}'
         # can't use the api method to get the imformation
         # self.baseApiUrl='https://api.bilibili.com/x/web-interface/view?aid={vid}'
         self.baseApiUrl = 'http://api.bilibili.com/archive_stat/stat?aid={vid}'
         self.count = 0
         self.startVID = 230000
-        self.dataFile = open('data.json', 'w+', encoding='utf-8')
+        # self.dataFile = open('data.json', 'w+', encoding='utf-8')
+
+        #get the latest vid
+        g=Grab()
+        resp=g.go('https://www.bilibili.com/newlist.html')
+        self.latestVid=int(resp.grab.xpath('/html/body/div[3]/div/div[2]/ul/li[1]/a[3]').attrib['href'][9:-1])
 
         #mongodb operate class
         self.mongodb=MongoDB('localhost',27070,'bili_spider')
+
+        #loading imformation
+        config=self.mongodb.read_conf(self.latestVid)
+        self.startVID=int(config['firstVid'])
 
         logging.info('prepare done')
 
     def task_generator(self):
         logging.info('generate start')
-        pass
+        logging.info('start at av{sid}, end at {eid}'.format(sid=self.startVID,eid=self.latestVid))
 
-        for vid in range(self.startVID, self.startVID+20):
-            # time.sleep(2)
+        for vid in range(self.startVID, self.latestVid):
+            time.sleep(1)
             yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
 
     def task_initial(self, grab, task):
@@ -57,6 +67,7 @@ class BiliSpider(Spider):
             if  grab.xpath_exists('//*[@id="app"]/div/div/div[1]/div/div[2]/div[1]'):
                 yield Task('no_video', grab=grab, vid=task.vid)
             else:
+                logging.info('successfully get the page av{vid}'.format(vid=task.vid))
                 data['vid']=task.vid
 
                 # get the data
@@ -79,7 +90,8 @@ class BiliSpider(Spider):
 
                 yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid,data=data)
         except:
-            traceback.print_exc()
+            print(task.vid)
+            # traceback.print_exc()
             logging.warning('av{vid} fail to get data,maybe the video is gone'.format(
                 vid=task.vid))
         pass
@@ -87,22 +99,27 @@ class BiliSpider(Spider):
     def task_get_view(self, grab, task):
         jsonData = grab.doc.json
         data=task.data
+
         data['view'] = jsonData['data']['view']
         data['danmaku'] = jsonData['data']['danmaku']
         data['like']=jsonData['data']['like']
-        # dataTemp.append(data)
-        yield Task('save_to_db',grab=grab,data=data)
+
+        self.dataTemp.append(data)
+        # print(len(self.dataTemp))
+
+        if len(self.dataTemp)>10:
+            yield Task('save_to_db',grab=grab,data=data)
 
     def task_save_to_db(self,grab,task):
-        # for i in self.dataTemp:
-        #     self.mongodb.insert(i,'test1')
-        # self.dataTemp=[]
-        self.mongodb.insert(task.data,'test1')
+        for i in self.dataTemp:
+            self.mongodb.insert(i,'test1')
+        self.dataTemp=[]
 
     def update_grab_instance(self, grab):
         grab.setup(headers=self.headers)
-        pass
+
     def task_no_video(self,grab,task):
+        logging.warning('av{vid} not found'.format(vid=task.vid))
         pass
 
     # def vid_generator():
@@ -110,7 +127,11 @@ class BiliSpider(Spider):
     #     pass
 
     def shutdown(self):
-        pass
+        #insert all the data in buffer
+        self.task_save_to_db(-1,-1)
+
+
+
 
 
 class MongoDB:
@@ -118,7 +139,7 @@ class MongoDB:
     def __init__(self, ip, port, database):
         client = MongoClient(ip, port)
         self.db = client[database]
-        self.confKeys = ['firstVid', 'dataToCollect']
+        self.confKeys = ['firstVid']
         self.cacheKeys = ['presentVid']
 
     def insert(self, data, collection):
@@ -129,7 +150,7 @@ class MongoDB:
         except:
             pass
 
-    def get_conf(self):
+    def read_conf(self,vid=-1):
         # read the global configuration
         # TODO add more configuration
 
@@ -137,9 +158,11 @@ class MongoDB:
         config = dict.fromkeys(self.confKeys, -1)
         try:
             for key in config.keys():
-                config[key] = configCollection[key]
+                config[key] = configCollection.find_one()[key]
         except:
-            logging.critical('error when read config')
+            traceback.print_exc()
+            logging.critical('error when read config, rewrite config')
+            self.db.config.insert_one({'firstVid':vid})
             sys.exit(0)
 
         return config
