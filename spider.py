@@ -3,6 +3,9 @@ import sys
 import time
 import json
 import logging
+import json
+import traceback
+
 from pymongo import MongoClient
 
 from lxml import etree
@@ -13,14 +16,25 @@ from grab.spider import Spider, Task
 
 
 class BiliSpider(Spider):
+    dataTemp = []
+    
+    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
+
+    dataKeys = ['title', 'likes', 'zone',
+                'author', 'description', 'view', 'danmaku']
 
     def prepare(self):
-        self.baseUrl = 'http://www.bilibili.com/av{vid}'
+        self.baseUrl = 'http://www.bilibili.com/video/av{vid}'
         # can't use the api method to get the imformation
         # self.baseApiUrl='https://api.bilibili.com/x/web-interface/view?aid={vid}'
+        self.baseApiUrl = 'http://api.bilibili.com/archive_stat/stat?aid={vid}'
         self.count = 0
         self.startVID = 230000
         self.dataFile = open('data.json', 'w+', encoding='utf-8')
+
+        #mongodb operate class
+        self.mongodb=MongoDB('localhost',27070,'bili_spider')
+
         logging.info('prepare done')
 
     def task_generator(self):
@@ -29,38 +43,74 @@ class BiliSpider(Spider):
 
         for vid in range(self.startVID, self.startVID+20):
             # time.sleep(2)
-            yield Task('get_title', url=self.baseUrl.format(vid=vid), vid=vid)
+            yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
 
     def task_initial(self, grab, task):
         pass
 
-    def task_get_title(self, grab, task):
+    def task_get_data(self, grab, task):
         logging.info('get the web page of av{vid}'.format(vid=task.vid))
-        # html=etree.HTML(grab.text)
+
+        data = {}
+
         try:
-            title = grab.xpath('//*[@id="viewbox_report"]/h1/span').text
+            if  grab.xpath_exists('//*[@id="app"]/div/div/div[1]/div/div[2]/div[1]'):
+                yield Task('no_video', grab=grab, vid=task.vid)
+            else:
+                data['vid']=task.vid
+
+                # get the data
+                data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
+                # data['likes'] = grab.xpath(
+                #     '//*[@id="arc_toolbar_report"]/div[1]/span[1]')
+                data['zone'] = grab.xpath(
+                    '//*[@id="viewbox_report"]/div[1]/span[1]/a[1]')
+                data['author'] = grab.xpath(
+                    '//*[@id="v_upinfo"]/div[2]/div[1]/a[1]')
+                data['description'] = grab.xpath('//*[@id="v_desc"]/div')
+
+                # TODO-clean the data
+                data['title'] = data['title'].text
+                # data['likes'] = data['likes'].attrib['title'][4:]
+                data['zone'] = data['zone'].text
+                data['uid'] = data['author'].attrib['href'][21:]
+                data['author'] = data['author'].text
+                data['description'] = data['description'].text
+
+                yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid,data=data)
         except:
+            traceback.print_exc()
             logging.warning('av{vid} fail to get data,maybe the video is gone'.format(
                 vid=task.vid))
-        else:
-            if title is not None:
-                logging.info(
-                    'successfully got data from av{vid}'.format(vid=task.vid))
+        pass
 
-                self.dataFile.write('av{vid}: {title}\n'.format(
-                    vid=task.vid, title=title))
-                yield Task('end_func', grab=grab, msg=title)
+    def task_get_view(self, grab, task):
+        jsonData = grab.doc.json
+        data=task.data
+        data['view'] = jsonData['data']['view']
+        data['danmaku'] = jsonData['data']['danmaku']
+        data['like']=jsonData['data']['like']
+        # dataTemp.append(data)
+        yield Task('save_to_db',grab=grab,data=data)
 
-    def task_end_func(self, grab, task):
-        print(task.msg)
+    def task_save_to_db(self,grab,task):
+        # for i in self.dataTemp:
+        #     self.mongodb.insert(i,'test1')
+        # self.dataTemp=[]
+        self.mongodb.insert(task.data,'test1')
 
     def update_grab_instance(self, grab):
-        grab.setup(timeout=20)
+        grab.setup(headers=self.headers)
+        pass
+    def task_no_video(self,grab,task):
         pass
 
     # def vid_generator():
     #     # print('in function vid gen')
     #     pass
+
+    def shutdown(self):
+        pass
 
 
 class MongoDB:
@@ -120,14 +170,15 @@ class MongoDB:
             self.db.cache.insert_one(post)
 
     def test(self):
-        post={'presentVid':23333}
+        post = {'presentVid': 23333}
         self.writeCache(post)
-        data=self.readCache()
+        data = self.readCache()
         print(data)
 
 
 def init_log():
 
+    # TODO-debug log will be delete
     if not os.path.exists('./log'):
         try:
             os.mkdir('./log', 755)
@@ -164,5 +215,41 @@ if __name__ == "__main__":
     mySpider = BiliSpider(thread_number=4)
     mySpider.run()
 
-    # db=MongoDB('localhost',27070,'test')
-    # db.test()
+
+
+#     data={}
+#     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
+# }
+#     g=Grab()
+#     g.setup(headers=headers)
+#     resp=g.go('www.bilibili.com/video/av230000')
+#     grab=resp.grab
+#     data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
+#     data['likes'] = grab.xpath(
+#         '//*[@id="arc_toolbar_report"]/div[1]/span[1]')
+#     data['zone'] = grab.xpath(
+#         '//*[@id="viewbox_report"]/div[1]/span[1]/a[1]')
+#     data['author'] = grab.xpath(
+#         '//*[@id="v_upinfo"]/div[2]/div[1]/a[1]')
+#     data['description'] = grab.xpath('//*[@id="v_desc"]/div')
+
+
+#     data['title'] = data['title'].text
+#     data['likes'] = data['likes'].attrib['title'][4:]
+#     data['zone'] = data['zone'].text
+#     data['uid'] = data['author'].attrib['href'][21:]
+#     data['author'] = data['author'].text
+#     data['description'] = data['description'].text
+
+#     print(data['title'])
+#     print(data['likes'])
+#     print(zone)
+#     print(uid)
+#     print(author)
+#     # print(danmaku)
+#     # print(view)
+#     print(description)
+
+    # mogo=MongoDB('localhost',27070,'newdb')
+    # mogo.test()
+
