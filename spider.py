@@ -17,6 +17,7 @@ from grab.spider import Spider, Task
 # g.go('www.baidu.com')
 
 
+
 class BiliSpider(Spider):
     dataTemp = []
 
@@ -33,8 +34,7 @@ class BiliSpider(Spider):
         # self.baseApiUrl='https://api.bilibili.com/x/web-interface/view?aid={vid}'
         self.baseApiUrl = 'http://api.bilibili.com/archive_stat/stat?aid={vid}'
         self.successCount = 0
-        self.startVID = 230000
-        # self.dataFile = open('data.json', 'w+', encoding='utf-8')
+        self.startVID = 0
 
         # get the latest vid
         g = Grab()
@@ -56,15 +56,20 @@ class BiliSpider(Spider):
         logging.info('start at av{sid}, end at {eid}'.format(
             sid=self.startVID, eid=self.latestVid))
 
-        for vid in range(self.startVID, self.startVID+100000):
+        # for vid in range(self.startVID, self.startVID+100000):
+        #     yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
+
+        #new gen
+        vid=self.mongodb.get_vid()
+        while vid is not None:
             yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
+            vid=self.mongodb.get_vid()
 
     def task_initial(self, grab, task):
         pass
 
     def task_get_data(self, grab, task):
         logging.info('get the web page of av{vid}'.format(vid=task.vid))
-        #TODO add publish time data,copy_right
 
         data = {}
 
@@ -136,6 +141,8 @@ class BiliSpider(Spider):
         for i in self.dataTemp:
             self.successCount += 1
             self.mongodb.insert(i, 'bili_1')
+            #TODO add db insert for crawl_page
+            self.mongodb.set_vid(i.vid,2)
         self.dataTemp = []
 
     def update_grab_instance(self, grab):
@@ -143,11 +150,6 @@ class BiliSpider(Spider):
 
     def task_no_video(self, grab, task):
         logging.warning('av{vid} not found'.format(vid=task.vid))
-        pass
-
-    # def vid_generator():
-    #     # print('in function vid gen')
-    #     pass
 
     def get_proxy(self):
         g = Grab()
@@ -178,6 +180,19 @@ class MongoDB:
             self.db[collection].insert_one(data)
         except:
             pass
+
+    def get_vid(self):
+        data=self.db.crawl_page.find_one({'state':0})
+        if data is None:
+            return None
+        else:
+            self.db.crawl_page.update_one({'_id':data['_id']},{'$set':{'state':1}})
+            return data['vid']
+
+     #TODO add db insert function for crawl_page
+     def set_vid(self,vid,state):
+         pass
+    
 
     def read_conf(self, vid=-1):
         '''
@@ -226,6 +241,7 @@ class MongoDB:
     def insert_crawl_data(self):
         '''
         insert all the page be crawl
+        state: 0-not crawl;1-crawling;2-crawl success;3-crawl fail
         '''
         minVid=10000
         vidEachRange=500
@@ -244,7 +260,7 @@ class MongoDB:
             while len(insertSet)<vidEachRange:
                 insertSet.add(random.randrange(rangeList[i],rangeList[i+1]))
             while len(insertSet)>0:
-                self.insert({'vid':insertSet.pop()},'crawl_page')
+                self.insert({'vid':insertSet.pop(),'state':0},'crawl_page')
             
             
 
@@ -258,6 +274,7 @@ class MongoDB:
 
 def init_log():
 
+    #TODO add time log support
     # TODO-debug log will be delete
     if not os.path.exists('./log'):
         try:
@@ -300,12 +317,12 @@ if __name__ == "__main__":
 #     data={}
 #     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
 # }
-    g=Grab()
-    # g.setup(headers=headers)
-    resp=g.go('www.bilibili.com/video/av235234')
-    grab=resp.grab
-    pubtime=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
-    print(pubtime)
+    # g=Grab()
+    # # g.setup(headers=headers)
+    # resp=g.go('www.bilibili.com/video/av235234')
+    # grab=resp.grab
+    # pubtime=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
+    # print(pubtime)
 #     grab=resp.grab
 #     data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
 #     data['likes'] = grab.xpath(
@@ -333,6 +350,6 @@ if __name__ == "__main__":
 #     # print(view)
 #     print(description)
 
-    # mogo=MongoDB('localhost',27070,'newdb')
-    # mogo.insert_crawl_data()
+    mogo=MongoDB('localhost',27070,'newdb')
+    print(mogo.get_vid())
 
