@@ -5,6 +5,8 @@ import json
 import logging
 import json
 import traceback
+import random
+import time
 
 from pymongo import MongoClient
 
@@ -62,6 +64,7 @@ class BiliSpider(Spider):
 
     def task_get_data(self, grab, task):
         logging.info('get the web page of av{vid}'.format(vid=task.vid))
+        #TODO add publish time data,copy_right
 
         data = {}
 
@@ -83,13 +86,14 @@ class BiliSpider(Spider):
                     '//*[@id="v_upinfo"]/div[2]/div[1]/a[1]')
                 data['description'] = grab.xpath('//*[@id="v_desc"]/div')
 
-                # TODO-clean the data
+
                 data['title'] = data['title'].text
                 # data['likes'] = data['likes'].attrib['title'][4:]
                 data['zone'] = data['zone'].text
                 data['uid'] = data['author'].attrib['href'][21:]
                 data['author'] = data['author'].text
                 data['description'] = data['description'].text
+                data['pubtime']=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
 
                 yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid, data=data)
         except:
@@ -116,6 +120,11 @@ class BiliSpider(Spider):
         data['view'] = jsonData['data']['view']
         data['danmaku'] = jsonData['data']['danmaku']
         data['like'] = jsonData['data']['like']
+        data['favorite']=jsonData['data']['favorite']
+        data['coin']=jsonData['data']['coin']
+        data['reply']=jsonData['data']['reply']
+        data['copyright']=jsonData['data']['copyright']
+        data['share']=jsonData['data']['share']
 
         self.dataTemp.append(data)
         # print(len(self.dataTemp))
@@ -161,7 +170,9 @@ class MongoDB:
         self.cacheKeys = ['presentVid']
 
     def insert(self, data, collection):
-        # TODO add data to collection
+        '''
+        add data to collection
+        '''
         # self.db.collection.insert_one(data)
         try:
             self.db[collection].insert_one(data)
@@ -169,8 +180,9 @@ class MongoDB:
             pass
 
     def read_conf(self, vid=-1):
-        # read the global configuration
-        # TODO add more configuration
+        '''
+        read the global configuration
+        '''
 
         configCollection = self.db.config
         config = dict.fromkeys(self.confKeys, -1)
@@ -186,8 +198,9 @@ class MongoDB:
         return config
 
     def readCache(self):
-        # read the cache for spider
-        # TODO add more cache item
+        '''
+        read the cache for spider
+        '''
 
         cache = dict.fromkeys(self.cacheKeys, -1)
         cacheCollection = self.db.cache
@@ -210,10 +223,30 @@ class MongoDB:
         else:
             self.db.cache.insert_one(post)
 
-    def insert_crawl_data():
+    def insert_crawl_data(self):
         '''
         insert all the page be crawl
         '''
+        minVid=10000
+        vidEachRange=500
+
+        # get the latest vid
+        g = Grab()
+        resp = g.go('https://www.bilibili.com/newlist.html')
+        latestVid = int(resp.grab.xpath(
+            '/html/body/div[3]/div/div[2]/ul/li[1]/a[3]').attrib['href'][9:-1])
+
+        rangeList=[10000]
+        while rangeList[-1]+100000<latestVid:
+            rangeList.append(rangeList[-1]+100000)
+        insertSet=set()
+        for i in range(len(rangeList)-1):
+            while len(insertSet)<vidEachRange:
+                insertSet.add(random.randrange(rangeList[i],rangeList[i+1]))
+            while len(insertSet)>0:
+                self.insert({'vid':insertSet.pop()},'crawl_page')
+            
+            
 
 
     def test(self):
@@ -258,18 +291,21 @@ def init_log():
 
 
 if __name__ == "__main__":
-    init_log()
-    #i think 8 is a good number?
-    mySpider = BiliSpider(thread_number=12)
-    mySpider.run()
+    # init_log()
+    # #i think 8 is a good number?
+    # mySpider = BiliSpider(thread_number=12)
+    # mySpider.run()
 
 
 #     data={}
 #     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
 # }
-#     g=Grab()
-#     g.setup(headers=headers)
-#     resp=g.go('www.bilibili.com/video/av230000')
+    g=Grab()
+    # g.setup(headers=headers)
+    resp=g.go('www.bilibili.com/video/av235234')
+    grab=resp.grab
+    pubtime=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
+    print(pubtime)
 #     grab=resp.grab
 #     data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
 #     data['likes'] = grab.xpath(
@@ -298,4 +334,5 @@ if __name__ == "__main__":
 #     print(description)
 
     # mogo=MongoDB('localhost',27070,'newdb')
-    # mogo.test()
+    # mogo.insert_crawl_data()
+
