@@ -17,42 +17,44 @@ from grab.spider import Spider, Task
 
 class BiliSpider(Spider):
     dataTemp = []
-    
-    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
 
     dataKeys = ['title', 'likes', 'zone',
                 'author', 'description', 'view', 'danmaku']
 
     def prepare(self):
-        #basic variable
+        # basic variable
         self.baseUrl = 'http://www.bilibili.com/video/av{vid}'
         # can't use the api method to get the imformation
         # self.baseApiUrl='https://api.bilibili.com/x/web-interface/view?aid={vid}'
         self.baseApiUrl = 'http://api.bilibili.com/archive_stat/stat?aid={vid}'
-        self.count = 0
+        self.successCount = 0
         self.startVID = 230000
         # self.dataFile = open('data.json', 'w+', encoding='utf-8')
 
-        #get the latest vid
-        g=Grab()
-        resp=g.go('https://www.bilibili.com/newlist.html')
-        self.latestVid=int(resp.grab.xpath('/html/body/div[3]/div/div[2]/ul/li[1]/a[3]').attrib['href'][9:-1])
+        # get the latest vid
+        g = Grab()
+        resp = g.go('https://www.bilibili.com/newlist.html')
+        self.latestVid = int(resp.grab.xpath(
+            '/html/body/div[3]/div/div[2]/ul/li[1]/a[3]').attrib['href'][9:-1])
 
-        #mongodb operate class
-        self.mongodb=MongoDB('localhost',27070,'bili_spider')
+        # mongodb operate class
+        self.mongodb = MongoDB('localhost', 27070, 'bili_spider')
 
-        #loading imformation
-        config=self.mongodb.read_conf(self.latestVid)
-        self.startVID=int(config['firstVid'])
+        # loading imformation
+        config = self.mongodb.read_conf(self.latestVid)
+        self.startVID = int(config['firstVid'])
 
         logging.info('prepare done')
 
     def task_generator(self):
         logging.info('generate start')
-        logging.info('start at av{sid}, end at {eid}'.format(sid=self.startVID,eid=self.latestVid))
+        logging.info('start at av{sid}, end at {eid}'.format(
+            sid=self.startVID, eid=self.latestVid))
 
-        for vid in range(self.startVID, self.latestVid):
-            time.sleep(1)
+        for vid in range(self.startVID, self.startVID+100000):
             yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
 
     def task_initial(self, grab, task):
@@ -64,11 +66,12 @@ class BiliSpider(Spider):
         data = {}
 
         try:
-            if  grab.xpath_exists('//*[@id="app"]/div/div/div[1]/div/div[2]/div[1]'):
+            if grab.xpath_exists('//*[@id="app"]/div/div/div[1]/div/div[2]/div[1]'):
                 yield Task('no_video', grab=grab, vid=task.vid)
             else:
-                logging.info('successfully get the page av{vid}'.format(vid=task.vid))
-                data['vid']=task.vid
+                logging.info(
+                    'successfully get the page av{vid}'.format(vid=task.vid))
+                data['vid'] = task.vid
 
                 # get the data
                 data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
@@ -88,37 +91,48 @@ class BiliSpider(Spider):
                 data['author'] = data['author'].text
                 data['description'] = data['description'].text
 
-                yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid,data=data)
+                yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid, data=data)
         except:
             print(task.vid)
-            # traceback.print_exc()
+            traceback.print_exc()
             logging.warning('av{vid} fail to get data,maybe the video is gone'.format(
                 vid=task.vid))
         pass
 
+    def task_get_data_fallback(self,task):
+        logging.error('video got fail at {vid}'.format(vid=task.vid))
+        yield Task('get_data', url=task.url,
+            task_try_count=task.task_try_count + 1)
+
+    def task_get_view_fallback(self,task):
+        logging.error('video got fail at {vid}'.format(vid=task.vid))
+        yield Task('get_view', url=task.url,
+            task_try_count=task.task_try_count + 1)
+
     def task_get_view(self, grab, task):
         jsonData = grab.doc.json
-        data=task.data
+        data = task.data
 
         data['view'] = jsonData['data']['view']
         data['danmaku'] = jsonData['data']['danmaku']
-        data['like']=jsonData['data']['like']
+        data['like'] = jsonData['data']['like']
 
         self.dataTemp.append(data)
         # print(len(self.dataTemp))
 
-        if len(self.dataTemp)>10:
-            yield Task('save_to_db',grab=grab,data=data)
+        if len(self.dataTemp) > 10:
+            yield Task('save_to_db', grab=grab, data=data)
 
-    def task_save_to_db(self,grab,task):
+    def task_save_to_db(self, grab, task):
         for i in self.dataTemp:
-            self.mongodb.insert(i,'test1')
-        self.dataTemp=[]
+            self.successCount += 1
+            self.mongodb.insert(i, 'bili_1')
+        self.dataTemp = []
 
     def update_grab_instance(self, grab):
-        grab.setup(headers=self.headers)
+        grab.setup(headers=self.headers, proxy=self.get_proxy(), timeout=4)
 
-    def task_no_video(self,grab,task):
+    def task_no_video(self, grab, task):
         logging.warning('av{vid} not found'.format(vid=task.vid))
         pass
 
@@ -126,12 +140,16 @@ class BiliSpider(Spider):
     #     # print('in function vid gen')
     #     pass
 
+    def get_proxy(self):
+        g = Grab()
+        proxyResp = g.go('localhost:5010/get/')
+        return str(proxyResp.body.decode())
+
     def shutdown(self):
-        #insert all the data in buffer
-        self.task_save_to_db(-1,-1)
-
-
-
+        # insert all the data in buffer
+        self.task_save_to_db(-1, -1)
+        logging.info('total video:{tvid}, successful count{svid}'.format(
+            tvid=self.latestVid-self.startVID, svid=self.successCount))
 
 
 class MongoDB:
@@ -150,7 +168,7 @@ class MongoDB:
         except:
             pass
 
-    def read_conf(self,vid=-1):
+    def read_conf(self, vid=-1):
         # read the global configuration
         # TODO add more configuration
 
@@ -162,7 +180,7 @@ class MongoDB:
         except:
             traceback.print_exc()
             logging.critical('error when read config, rewrite config')
-            self.db.config.insert_one({'firstVid':vid})
+            self.db.config.insert_one({'firstVid': vid})
             sys.exit(0)
 
         return config
@@ -191,6 +209,12 @@ class MongoDB:
             logging.warning('error when writting cache')
         else:
             self.db.cache.insert_one(post)
+
+    def insert_crawl_data():
+        '''
+        insert all the page be crawl
+        '''
+
 
     def test(self):
         post = {'presentVid': 23333}
@@ -235,9 +259,9 @@ def init_log():
 
 if __name__ == "__main__":
     init_log()
-    mySpider = BiliSpider(thread_number=4)
+    #i think 8 is a good number?
+    mySpider = BiliSpider(thread_number=12)
     mySpider.run()
-
 
 
 #     data={}
@@ -275,4 +299,3 @@ if __name__ == "__main__":
 
     # mogo=MongoDB('localhost',27070,'newdb')
     # mogo.test()
-
