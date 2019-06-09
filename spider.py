@@ -190,7 +190,7 @@ class MongoDB:
             return data['vid']
 
      #TODO add db insert function for crawl_page
-     def set_vid(self,vid,state):
+    def set_vid(self,vid,state):
          pass
     
 
