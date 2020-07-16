@@ -7,6 +7,7 @@ import json
 import traceback
 import random
 import time
+from logging.handlers import RotatingFileHandler
 
 from pymongo import MongoClient
 
@@ -15,7 +16,6 @@ from grab import Grab
 from grab.spider import Spider, Task
 # g = Grab(transport='urllib3')
 # g.go('www.baidu.com')
-
 
 
 class BiliSpider(Spider):
@@ -34,7 +34,10 @@ class BiliSpider(Spider):
         # self.baseApiUrl='https://api.bilibili.com/x/web-interface/view?aid={vid}'
         self.baseApiUrl = 'http://api.bilibili.com/archive_stat/stat?aid={vid}'
         self.successCount = 0
+        self.failedCount = 0
         self.startVID = 0
+
+        self.startTime = time.time()
 
         # get the latest vid
         g = Grab()
@@ -53,17 +56,19 @@ class BiliSpider(Spider):
 
     def task_generator(self):
         logging.info('generate start')
-        logging.info('start at av{sid}, end at {eid}'.format(
-            sid=self.startVID, eid=self.latestVid))
+        logging.info('crawl start at {time}'.format(
+            time=time.asctime(time.localtime(time.time()))))
+        # logging.info('start at av{sid}, end at {eid}'.format(
+        #     sid=self.startVID, eid=self.latestVid))
 
         # for vid in range(self.startVID, self.startVID+100000):
         #     yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
 
-        #new gen
-        vid=self.mongodb.get_vid()
+        # new gen
+        vid = self.mongodb.get_vid()
         while vid is not None:
             yield Task('get_data', url=self.baseUrl.format(vid=vid), vid=vid)
-            vid=self.mongodb.get_vid()
+            vid = self.mongodb.get_vid()
 
     def task_initial(self, grab, task):
         pass
@@ -91,14 +96,14 @@ class BiliSpider(Spider):
                     '//*[@id="v_upinfo"]/div[2]/div[1]/a[1]')
                 data['description'] = grab.xpath('//*[@id="v_desc"]/div')
 
-
                 data['title'] = data['title'].text
                 # data['likes'] = data['likes'].attrib['title'][4:]
                 data['zone'] = data['zone'].text
                 data['uid'] = data['author'].attrib['href'][21:]
                 data['author'] = data['author'].text
                 data['description'] = data['description'].text
-                data['pubtime']=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
+                data['pubtime'] = grab.xpath(
+                    '//*[@id="viewbox_report"]/div[1]/span[2]').text
 
                 yield Task('get_view', url=self.baseApiUrl.format(vid=task.vid), vid=task.vid, data=data)
         except:
@@ -108,15 +113,15 @@ class BiliSpider(Spider):
                 vid=task.vid))
         pass
 
-    def task_get_data_fallback(self,task):
+    def task_get_data_fallback(self, task):
         logging.error('video got fail at {vid}'.format(vid=task.vid))
         yield Task('get_data', url=task.url,
-            task_try_count=task.task_try_count + 1)
+                   task_try_count=task.task_try_count + 1)
 
-    def task_get_view_fallback(self,task):
+    def task_get_view_fallback(self, task):
         logging.error('video got fail at {vid}'.format(vid=task.vid))
         yield Task('get_view', url=task.url,
-            task_try_count=task.task_try_count + 1)
+                   task_try_count=task.task_try_count + 1)
 
     def task_get_view(self, grab, task):
         jsonData = grab.doc.json
@@ -125,11 +130,11 @@ class BiliSpider(Spider):
         data['view'] = jsonData['data']['view']
         data['danmaku'] = jsonData['data']['danmaku']
         data['like'] = jsonData['data']['like']
-        data['favorite']=jsonData['data']['favorite']
-        data['coin']=jsonData['data']['coin']
-        data['reply']=jsonData['data']['reply']
-        data['copyright']=jsonData['data']['copyright']
-        data['share']=jsonData['data']['share']
+        data['favorite'] = jsonData['data']['favorite']
+        data['coin'] = jsonData['data']['coin']
+        data['reply'] = jsonData['data']['reply']
+        data['copyright'] = jsonData['data']['copyright']
+        data['share'] = jsonData['data']['share']
 
         self.dataTemp.append(data)
         # print(len(self.dataTemp))
@@ -140,9 +145,8 @@ class BiliSpider(Spider):
     def task_save_to_db(self, grab, task):
         for i in self.dataTemp:
             self.successCount += 1
-            self.mongodb.insert(i, 'bili_1')
-            #TODO add db insert for crawl_page
-            self.mongodb.set_vid(i.vid,2)
+            self.mongodb.insert(i, 'bili_data')
+            self.mongodb.set_vid(i['vid'], 2)
         self.dataTemp = []
 
     def update_grab_instance(self, grab):
@@ -150,6 +154,8 @@ class BiliSpider(Spider):
 
     def task_no_video(self, grab, task):
         logging.warning('av{vid} not found'.format(vid=task.vid))
+        self.failedCount += 1
+        self.mongodb.set_vid(task.vid, 3)
 
     def get_proxy(self):
         g = Grab()
@@ -159,8 +165,12 @@ class BiliSpider(Spider):
     def shutdown(self):
         # insert all the data in buffer
         self.task_save_to_db(-1, -1)
+        # logging.info('total video:{tvid}, successful count{svid}'.format(
+        #     tvid=self.latestVid-self.startVID, svid=self.successCount))
         logging.info('total video:{tvid}, successful count{svid}'.format(
-            tvid=self.latestVid-self.startVID, svid=self.successCount))
+            tvid=self.failedCount+self.successCount, svid=self.successCount))
+        logging.info('start at {stime}, end at {etime}'.format(stime=time.asctime(
+            time.localtime(self.startTime)), etime=time.asctime(time.localtime(time.time()))))
 
 
 class MongoDB:
@@ -182,17 +192,16 @@ class MongoDB:
             pass
 
     def get_vid(self):
-        data=self.db.crawl_page.find_one({'state':0})
+        data = self.db.crawl_page.find_one({'state': 0})
         if data is None:
             return None
         else:
-            self.db.crawl_page.update_one({'_id':data['_id']},{'$set':{'state':1}})
+            self.db.crawl_page.update_one(
+                {'_id': data['_id']}, {'$set': {'state': 1}})
             return data['vid']
 
-     #TODO add db insert function for crawl_page
-    def set_vid(self,vid,state):
-         pass
-    
+    def set_vid(self, vid, state):
+        self.db.crawl_page.update_one({'vid': vid}, {'$set': {'state': state}})
 
     def read_conf(self, vid=-1):
         '''
@@ -243,8 +252,8 @@ class MongoDB:
         insert all the page be crawl
         state: 0-not crawl;1-crawling;2-crawl success;3-crawl fail
         '''
-        minVid=10000
-        vidEachRange=500
+        minVid = 10000
+        vidEachRange = 500
 
         # get the latest vid
         g = Grab()
@@ -252,18 +261,15 @@ class MongoDB:
         latestVid = int(resp.grab.xpath(
             '/html/body/div[3]/div/div[2]/ul/li[1]/a[3]').attrib['href'][9:-1])
 
-        rangeList=[10000]
-        while rangeList[-1]+100000<latestVid:
+        rangeList = [minVid]
+        while rangeList[-1]+100000 < latestVid:
             rangeList.append(rangeList[-1]+100000)
-        insertSet=set()
+        insertSet = set()
         for i in range(len(rangeList)-1):
-            while len(insertSet)<vidEachRange:
-                insertSet.add(random.randrange(rangeList[i],rangeList[i+1]))
-            while len(insertSet)>0:
-                self.insert({'vid':insertSet.pop(),'state':0},'crawl_page')
-            
-            
-
+            while len(insertSet) < vidEachRange:
+                insertSet.add(random.randrange(rangeList[i], rangeList[i+1]))
+            while len(insertSet) > 0:
+                self.insert({'vid': insertSet.pop(), 'state': 0}, 'crawl_page')
 
     def test(self):
         post = {'presentVid': 23333}
@@ -274,7 +280,6 @@ class MongoDB:
 
 def init_log():
 
-    #TODO add time log support
     # TODO-debug log will be delete
     if not os.path.exists('./log'):
         try:
@@ -297,59 +302,23 @@ def init_log():
     fh.addFilter(lambda record: record.msg != 'Deprecation Warning\n%s')
     fh.setFormatter(formatter)
 
-    logfile = './log/log'
-    lh = logging.FileHandler(logfile, mode='w')
-    lh.setLevel(logging.INFO)
+    logfile = './log/spider.log'
+    rotLogger = RotatingFileHandler(
+        logfile, maxBytes=10*1024*1024, backupCount=10)
+    # lh = logging.FileHandler(logfile, mode='w')
+    rotLogger.setLevel(logging.INFO)
     # lh.addFilter(lambda record: record.msg != 'Deprecation Warning\n%s')
-    lh.setFormatter(formatter)
+    rotLogger.setFormatter(formatter)
 
-    logger.addHandler(fh)
-    logger.addHandler(lh)
+    # logger.addHandler(fh)
+    logger.addHandler(rotLogger)
+
+    def test():
+        pass
 
 
 if __name__ == "__main__":
-    # init_log()
-    # #i think 8 is a good number?
-    # mySpider = BiliSpider(thread_number=12)
-    # mySpider.run()
-
-
-#     data={}
-#     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
-# }
-    # g=Grab()
-    # # g.setup(headers=headers)
-    # resp=g.go('www.bilibili.com/video/av235234')
-    # grab=resp.grab
-    # pubtime=grab.xpath('//*[@id="viewbox_report"]/div[1]/span[2]').text
-    # print(pubtime)
-#     grab=resp.grab
-#     data['title'] = grab.xpath('//*[@id="viewbox_report"]/h1/span')
-#     data['likes'] = grab.xpath(
-#         '//*[@id="arc_toolbar_report"]/div[1]/span[1]')
-#     data['zone'] = grab.xpath(
-#         '//*[@id="viewbox_report"]/div[1]/span[1]/a[1]')
-#     data['author'] = grab.xpath(
-#         '//*[@id="v_upinfo"]/div[2]/div[1]/a[1]')
-#     data['description'] = grab.xpath('//*[@id="v_desc"]/div')
-
-
-#     data['title'] = data['title'].text
-#     data['likes'] = data['likes'].attrib['title'][4:]
-#     data['zone'] = data['zone'].text
-#     data['uid'] = data['author'].attrib['href'][21:]
-#     data['author'] = data['author'].text
-#     data['description'] = data['description'].text
-
-#     print(data['title'])
-#     print(data['likes'])
-#     print(zone)
-#     print(uid)
-#     print(author)
-#     # print(danmaku)
-#     # print(view)
-#     print(description)
-
-    mogo=MongoDB('localhost',27070,'newdb')
-    print(mogo.get_vid())
-
+    init_log()
+    # i think 8 is a good number?
+    mySpider = BiliSpider(thread_number=12)
+    mySpider.run()
